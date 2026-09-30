@@ -21,5 +21,10 @@ body { margin: 0; background: #f4f0e8; }
 .diff-add { background: #e7f5eb; color: #1f6338; }
 .diff-remove { background: #fdebea; color: #9b2c25; text-decoration: line-through; }
 .status-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+.sync-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; flex: none; }
+.sync-dot.sync-synced { background: #2f6b45; }
+.sync-dot.sync-screen-behind { background: #b26a00; }
+.sync-dot.sync-needs-reconfirm { background: #b3261e; }
+.sync-dot.sync-never-deployed { background: #b26a00; }
 :focus-visible { outline: 3px solid #d18b21 !important; outline-offset: 2px; }
 @media (max-width: 900px) { .desktop-only { display: none !important; } }

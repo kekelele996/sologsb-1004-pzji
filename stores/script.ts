@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import type { Exhibit, Hall, Language, LanguageDraft, PersistedState, ScriptStatus, Segment, VersionSnapshot } from '~/types'
+import type { Exhibit, Hall, Language, LanguageDraft, OfflineRevision, PersistedState, PublishTarget, ReconRow, ReleasePackage, Screen, ScreenCache, ScriptStatus, Segment, SyncState, VersionSnapshot } from '~/types'
 
 export const LANGUAGES: Language[] = [
   { id: 'zh', code: 'zh-CN', label: '简体中文', shortLabel: '中' },
@@ -9,12 +9,81 @@ export const LANGUAGES: Language[] = [
 
 const STORAGE_KEY = 'museum-script-studio-v1'
 
+const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value))
+
+// 内容指纹：标题 + 讲解词 + 无障碍描述 + 各段落，用于比对屏幕缓存与工作台稿件
+export function hashOf(draft: Pick<LanguageDraft, 'title' | 'narration' | 'accessibility' | 'segments'>): string {
+  const raw = JSON.stringify({
+    t: draft.title,
+    n: draft.narration,
+    a: draft.accessibility,
+    s: draft.segments.map(segment => [segment.label, segment.content])
+  })
+  let hash = 5381
+  for (let index = 0; index < raw.length; index++) hash = ((hash << 5) + hash + raw.charCodeAt(index)) >>> 0
+  return hash.toString(36)
+}
+
 const segments = (prefix: string, values: Array<[string, string, boolean?]>): Segment[] => values.map(([label, content, locked], index) => ({
   id: `${prefix}-${index + 1}`,
   label,
   content,
   locked: Boolean(locked)
 }))
+
+// 下发链路示例数据：屏幕、投放登记、屏幕缓存与待合并的离线修订
+function seedDistribution(exhibits: Exhibit[]): Pick<PersistedState, 'versions' | 'screens' | 'targets' | 'packages' | 'caches' | 'revisions'> {
+  const empty = { versions: [], screens: [], targets: [], packages: [], caches: [], revisions: [] }
+  const jadeZh = exhibits.find(item => item.id === 'exhibit-jade')?.drafts.find(draft => draft.languageId === 'zh')
+  const bronzeZh = exhibits.find(item => item.id === 'exhibit-bronze')?.drafts.find(draft => draft.languageId === 'zh')
+  if (!jadeZh || !bronzeZh) return empty
+  const bronzeOnlineDraft = clone(bronzeZh)
+  bronzeOnlineDraft.narration = '爵是最早的青铜酒器之一。三足稳定器身，长流便于倾倒。'
+  const versions: VersionSnapshot[] = [
+    { id: 'version-jade-zh-online', exhibitId: 'exhibit-jade', languageId: 'zh', name: '上线基线 09-23', createdAt: '2026-09-23T09:00:00.000Z', draft: clone(jadeZh) },
+    { id: 'version-bronze-zh-online', exhibitId: 'exhibit-bronze', languageId: 'zh', name: '上线基线 09-22', createdAt: '2026-09-22T09:30:00.000Z', draft: bronzeOnlineDraft }
+  ]
+  const screens: Screen[] = [
+    { id: 'screen-a1', hallId: 'hall-ancient', code: 'K-A1', name: '序厅触摸屏', online: true },
+    { id: 'screen-a2', hallId: 'hall-ancient', code: 'K-A2', name: '玉琮展柜屏', online: false },
+    { id: 'screen-a3', hallId: 'hall-ancient', code: 'K-A3', name: '青铜展区屏', online: true },
+    { id: 'screen-b1', hallId: 'hall-silk', code: 'K-B1', name: '丝路序厅屏', online: true }
+  ]
+  const targets: PublishTarget[] = [
+    { exhibitId: 'exhibit-jade', screenIds: ['screen-a1', 'screen-a2'], onlineVersionId: 'version-jade-zh-online', confirmedHash: hashOf(jadeZh), confirmedAt: '2026-09-23T09:05:00.000Z' },
+    { exhibitId: 'exhibit-bronze', screenIds: ['screen-a3'], onlineVersionId: 'version-bronze-zh-online', confirmedHash: hashOf(bronzeOnlineDraft), confirmedAt: '2026-09-22T09:35:00.000Z' },
+    { exhibitId: 'exhibit-silk', screenIds: ['screen-b1'], onlineVersionId: '', confirmedHash: '', confirmedAt: '' }
+  ]
+  const caches: ScreenCache[] = [
+    { screenId: 'screen-a1', exhibitId: 'exhibit-jade', versionId: 'version-jade-zh-online', hash: hashOf(jadeZh), syncedAt: '2026-09-23T09:10:00.000Z' },
+    { screenId: 'screen-a2', exhibitId: 'exhibit-jade', versionId: 'version-jade-zh-old', hash: 'oldcache', syncedAt: '2026-09-10T09:10:00.000Z' },
+    { screenId: 'screen-a3', exhibitId: 'exhibit-bronze', versionId: 'version-bronze-zh-online', hash: hashOf(bronzeOnlineDraft), syncedAt: '2026-09-22T09:40:00.000Z' }
+  ]
+  const revisionOneSegments = clone(jadeZh.segments) as Segment[]
+  revisionOneSegments[0].content = '这件玉琮来自距今约五千年的良渚文化，请大家先看它外方内圆的整体造型。'
+  revisionOneSegments[3].content = '请沿展柜顺时针观察，触摸复制品前请先使用免洗消毒液，拍照请关闭闪光灯。'
+  const revisionTwoSegments = clone(jadeZh.segments) as Segment[]
+  revisionTwoSegments[2].content = '玉琮常被看作沟通天地的礼器，也象征权力与身份；现场可以数一数它有几节。'
+  const revisions: OfflineRevision[] = [
+    {
+      id: 'revision-jade-one', exhibitId: 'exhibit-jade', languageId: 'zh',
+      author: '王漱玉', device: '平板-导览03', note: '上午带团时观众常问拍照问题，补了一句提示。',
+      createdAt: '2026-09-29T07:30:00.000Z', importedAt: '2026-09-29T09:20:00.000Z',
+      baseUpdatedAt: jadeZh.updatedAt,
+      narration: `${jadeZh.narration}请大家留意四角的神人兽面纹，那是良渚人心中神灵的样子。`,
+      segments: revisionOneSegments, status: 'pending', mergedAt: '', mergeLog: []
+    },
+    {
+      id: 'revision-jade-two', exhibitId: 'exhibit-jade', languageId: 'zh',
+      author: '李青山', device: '平板-导览07', note: '下午场互动建议，基于两天前的稿子记录。',
+      createdAt: '2026-09-29T08:10:00.000Z', importedAt: '2026-09-29T09:25:00.000Z',
+      baseUpdatedAt: '2026-09-20T08:00:00.000Z',
+      narration: jadeZh.narration,
+      segments: revisionTwoSegments, status: 'pending', mergedAt: '', mergeLog: []
+    }
+  ]
+  return { versions, screens, targets, packages: [], caches, revisions }
+}
 
 function demoState(): PersistedState {
   const halls: Hall[] = [
@@ -106,7 +175,7 @@ function demoState(): PersistedState {
   return {
     halls,
     exhibits,
-    versions: [],
+    ...seedDistribution(exhibits),
     selectedHallId: halls[0].id,
     selectedExhibitId: exhibits[0].id,
     selectedLanguageId: 'zh',
@@ -119,6 +188,11 @@ export const useScriptStore = defineStore('museum-script', {
     halls: [] as Hall[],
     exhibits: [] as Exhibit[],
     versions: [] as VersionSnapshot[],
+    screens: [] as Screen[],
+    targets: [] as PublishTarget[],
+    packages: [] as ReleasePackage[],
+    caches: [] as ScreenCache[],
+    revisions: [] as OfflineRevision[],
     selectedHallId: '',
     selectedExhibitId: '',
     selectedLanguageId: 'zh',
@@ -145,7 +219,55 @@ export const useScriptStore = defineStore('museum-script', {
       return (this.selectedDraft?.narration || '').replace(/\s/g, '').length
     },
     canUndo(state): boolean { return state.past.length > 0 },
-    canRedo(state): boolean { return state.future.length > 0 }
+    canRedo(state): boolean { return state.future.length > 0 },
+    hallScreens(state): Screen[] {
+      return state.screens.filter(screen => screen.hallId === state.selectedHallId)
+    },
+    hallPackages(state): ReleasePackage[] {
+      return state.packages.filter(item => item.hallId === state.selectedHallId)
+    },
+    // 逐行对账：每个已登记展项 × 每块已登记屏幕，比对屏幕缓存、确认指纹与当前中文稿
+    reconciliation(state): ReconRow[] {
+      const rows: ReconRow[] = []
+      for (const target of state.targets) {
+        const exhibit = state.exhibits.find(item => item.id === target.exhibitId)
+        if (!exhibit) continue
+        const zhDraft = exhibit.drafts.find(draft => draft.languageId === 'zh')
+        const currentHash = zhDraft ? hashOf(zhDraft) : ''
+        for (const screenId of target.screenIds) {
+          const screen = state.screens.find(item => item.id === screenId)
+          if (!screen) continue
+          const cache = state.caches.find(item => item.screenId === screenId && item.exhibitId === target.exhibitId)
+          let status: SyncState
+          if (!target.confirmedHash || currentHash !== target.confirmedHash) status = 'needs-reconfirm'
+          else if (!cache) status = 'never-deployed'
+          else if (cache.hash !== target.confirmedHash) status = 'screen-behind'
+          else status = 'synced'
+          rows.push({
+            exhibitId: exhibit.id,
+            exhibitCode: exhibit.code,
+            exhibitTitle: exhibit.title,
+            hallId: exhibit.hallId,
+            screenId: screen.id,
+            screenCode: screen.code,
+            screenName: screen.name,
+            screenOnline: screen.online,
+            cacheHash: cache?.hash || '',
+            cacheSyncedAt: cache?.syncedAt || '',
+            confirmedHash: target.confirmedHash,
+            currentHash,
+            status
+          })
+        }
+      }
+      return rows
+    },
+    mismatchCount(): number {
+      return this.reconciliation.filter(row => row.status !== 'synced').length
+    },
+    pendingRevisionCount(state): number {
+      return state.revisions.filter(item => item.status === 'pending').length
+    }
   },
   actions: {
     hydrate() {
@@ -162,6 +284,12 @@ export const useScriptStore = defineStore('museum-script', {
       } else {
         this.resetDemo()
       }
+      // 旧版本地数据没有下发链路字段，补上演示屏幕与登记
+      if (!Array.isArray(this.screens) || !this.screens.length) {
+        const seed = seedDistribution(this.exhibits)
+        this.$patch({ ...seed, versions: [...seed.versions, ...this.versions] })
+        this.persist()
+      }
       this.ensureSelection()
       this.hydrated = true
     },
@@ -171,7 +299,11 @@ export const useScriptStore = defineStore('museum-script', {
       this.notice = '示例数据已就绪，可直接开始编辑。'
     },
     snapshot(): string {
-      return JSON.stringify({ halls: this.halls, exhibits: this.exhibits, versions: this.versions })
+      return JSON.stringify({
+        halls: this.halls, exhibits: this.exhibits, versions: this.versions,
+        screens: this.screens, targets: this.targets, packages: this.packages,
+        caches: this.caches, revisions: this.revisions
+      })
     },
     commit(mutator: () => void) {
       this.past.push(this.snapshot())
@@ -185,6 +317,8 @@ export const useScriptStore = defineStore('museum-script', {
       if (typeof localStorage === 'undefined') return
       const data: PersistedState = {
         halls: this.halls, exhibits: this.exhibits, versions: this.versions,
+        screens: this.screens, targets: this.targets, packages: this.packages,
+        caches: this.caches, revisions: this.revisions,
         selectedHallId: this.selectedHallId, selectedExhibitId: this.selectedExhibitId,
         selectedLanguageId: this.selectedLanguageId, lastSavedAt: this.lastSavedAt
       }
@@ -304,6 +438,174 @@ export const useScriptStore = defineStore('museum-script', {
       if (!draft) return 0
       const checks = [draft.title, draft.narration, draft.accessibility, draft.sources, draft.segments.length > 0 ? 'segments' : '']
       return Math.round(checks.filter(Boolean).length / checks.length * 100)
+    },
+    zhDraftOf(exhibitId: string): LanguageDraft | undefined {
+      return this.exhibits.find(item => item.id === exhibitId)?.drafts.find(draft => draft.languageId === 'zh')
+    },
+    hashOfDraft(draft: LanguageDraft): string {
+      return hashOf(draft)
+    },
+    targetFor(exhibitId: string): PublishTarget | undefined {
+      return this.targets.find(item => item.exhibitId === exhibitId)
+    },
+    exhibitSyncState(exhibitId: string): SyncState | 'none' {
+      const rows = this.reconciliation.filter(row => row.exhibitId === exhibitId)
+      if (!rows.length) return 'none'
+      if (rows.some(row => row.status === 'needs-reconfirm')) return 'needs-reconfirm'
+      if (rows.some(row => row.status === 'never-deployed')) return 'never-deployed'
+      if (rows.some(row => row.status === 'screen-behind')) return 'screen-behind'
+      return 'synced'
+    },
+    setCache(entry: ScreenCache) {
+      const existing = this.caches.find(item => item.screenId === entry.screenId && item.exhibitId === entry.exhibitId)
+      if (existing) Object.assign(existing, entry)
+      else this.caches.push(entry)
+    },
+    setTargetScreens(exhibitId: string, screenIds: string[]) {
+      this.commit(() => {
+        const target = this.targetFor(exhibitId)
+        if (target) target.screenIds = screenIds
+        else this.targets.push({ exhibitId, screenIds, onlineVersionId: '', confirmedHash: '', confirmedAt: '' })
+      })
+      this.notice = '投放屏幕登记已更新。'
+    },
+    // 以当前中文稿确认上线：生成快照并记录内容指纹；中文稿再改动时会自动变为待重新确认
+    confirmOnline(exhibitId: string) {
+      const draft = this.zhDraftOf(exhibitId)
+      if (!draft) return
+      const now = new Date().toISOString()
+      this.commit(() => {
+        const version: VersionSnapshot = {
+          id: `version-${Date.now()}`,
+          exhibitId,
+          languageId: 'zh',
+          name: `上线确认 ${new Date().toLocaleString('zh-CN', { hour12: false })}`,
+          createdAt: now,
+          draft: clone(draft)
+        }
+        this.versions.unshift(version)
+        const target = this.targetFor(exhibitId)
+        if (target) Object.assign(target, { onlineVersionId: version.id, confirmedHash: hashOf(draft), confirmedAt: now })
+        else this.targets.push({ exhibitId, screenIds: [], onlineVersionId: version.id, confirmedHash: hashOf(draft), confirmedAt: now })
+      })
+      this.notice = '已按当前中文稿确认上线版本，请生成发布包下发到屏幕。'
+    },
+    // 按展厅生成发布包：只纳入中文稿与确认指纹一致的展项，其余拦下提示
+    buildPackage(hallId: string) {
+      const hall = this.halls.find(item => item.id === hallId)
+      if (!hall) return
+      const hallExhibitIds = this.exhibits.filter(item => item.hallId === hallId).map(item => item.id)
+      const targets = this.targets.filter(item => hallExhibitIds.includes(item.exhibitId) && item.screenIds.length)
+      const ready: ReleasePackage['items'] = []
+      const blocked: string[] = []
+      for (const target of targets) {
+        const exhibit = this.exhibits.find(item => item.id === target.exhibitId)
+        const zhDraft = exhibit?.drafts.find(draft => draft.languageId === 'zh')
+        if (!exhibit || !zhDraft) continue
+        if (target.confirmedHash && hashOf(zhDraft) === target.confirmedHash) {
+          ready.push({ exhibitId: exhibit.id, title: exhibit.title, versionId: target.onlineVersionId, hash: target.confirmedHash })
+        } else {
+          blocked.push(exhibit.title)
+        }
+      }
+      if (!ready.length) {
+        this.notice = blocked.length ? `「${blocked.join('」「')}」的中文稿待重新确认，暂无可打包的展项。` : '当前展厅还没有登记投放屏幕的展项。'
+        return
+      }
+      this.commit(() => {
+        this.packages.unshift({
+          id: `package-${Date.now()}`,
+          hallId,
+          name: `${hall.name}发布包 ${new Date().toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })}`,
+          createdAt: new Date().toISOString(),
+          deployedAt: '',
+          items: ready
+        })
+      })
+      this.notice = blocked.length ? `发布包已生成（${ready.length} 个展项）；「${blocked.join('」「')}」待重新确认，未纳入。` : `发布包已生成，包含 ${ready.length} 个展项。`
+    },
+    // 下发到展厅内在线屏幕；离线屏幕保持旧缓存，对账里会继续挂着
+    deployPackage(packageId: string) {
+      const pkg = this.packages.find(item => item.id === packageId)
+      if (!pkg) return
+      const hallScreens = this.screens.filter(item => item.hallId === pkg.hallId)
+      const online = hallScreens.filter(item => item.online)
+      const offline = hallScreens.filter(item => !item.online)
+      const now = new Date().toISOString()
+      this.commit(() => {
+        for (const screen of online) {
+          for (const item of pkg.items) {
+            const target = this.targetFor(item.exhibitId)
+            if (!target?.screenIds.includes(screen.id)) continue
+            this.setCache({ screenId: screen.id, exhibitId: item.exhibitId, versionId: item.versionId, hash: item.hash, syncedAt: now })
+          }
+        }
+        pkg.deployedAt = now
+      })
+      this.notice = offline.length
+        ? `已下发到 ${online.map(item => item.code).join('、')}；${offline.map(item => item.code).join('、')} 离线未更新，请在对账中跟进。`
+        : `已下发到 ${online.length} 块在线屏幕。`
+    },
+    // 单屏补发：把已确认的上线版本推给指定屏幕
+    deployToScreen(exhibitId: string, screenId: string) {
+      const target = this.targetFor(exhibitId)
+      const screen = this.screens.find(item => item.id === screenId)
+      if (!target?.confirmedHash || !screen) return
+      this.commit(() => {
+        this.setCache({ screenId, exhibitId, versionId: target.onlineVersionId, hash: target.confirmedHash, syncedAt: new Date().toISOString() })
+      })
+      this.notice = `已向 ${screen.code} 补发展项内容。`
+    },
+    toggleScreenOnline(screenId: string) {
+      const screen = this.screens.find(item => item.id === screenId)
+      if (!screen) return
+      this.commit(() => { screen.online = !screen.online })
+    },
+    // 离线修订只追加、不覆盖：同一展项的多份修订都会保留
+    importRevision(input: Pick<OfflineRevision, 'exhibitId' | 'languageId' | 'author' | 'device' | 'note' | 'narration' | 'segments' | 'baseUpdatedAt'>) {
+      this.commit(() => {
+        this.revisions.unshift({
+          id: `revision-${Date.now()}`,
+          ...input,
+          segments: clone(input.segments),
+          createdAt: new Date().toISOString(),
+          importedAt: new Date().toISOString(),
+          status: 'pending',
+          mergedAt: '',
+          mergeLog: []
+        })
+      })
+      this.notice = '离线修订已导入，等待合并进工作台。'
+    },
+    // 合并进工作台：已定稿锁定的段落保持不动，其余按段落名对齐更新
+    mergeRevision(revisionId: string) {
+      const revision = this.revisions.find(item => item.id === revisionId)
+      if (!revision || revision.status === 'merged') return
+      const draft = this.exhibits.find(item => item.id === revision.exhibitId)?.drafts.find(item => item.languageId === revision.languageId)
+      if (!draft) return
+      const log: string[] = []
+      this.commit(() => {
+        if (revision.baseUpdatedAt && revision.baseUpdatedAt !== draft.updatedAt) log.push('该修订基于较早的工作台稿，已按最新稿合并')
+        if (revision.narration.trim() && revision.narration !== draft.narration) {
+          draft.narration = revision.narration
+          log.push('讲解词已更新')
+        }
+        for (const revised of revision.segments) {
+          const existing = draft.segments.find(segment => segment.label === revised.label)
+          if (existing) {
+            if (existing.locked) { log.push(`段落「${existing.label}」已定稿锁定，保持不动`); continue }
+            if (existing.content !== revised.content) { existing.content = revised.content; log.push(`段落「${existing.label}」已更新`) }
+          } else if (revised.content.trim()) {
+            draft.segments.push({ id: `segment-${Date.now()}-${draft.segments.length}`, label: revised.label, content: revised.content, locked: false })
+            log.push(`新增段落「${revised.label}」`)
+          }
+        }
+        draft.updatedAt = new Date().toISOString()
+        revision.status = 'merged'
+        revision.mergedAt = new Date().toISOString()
+        revision.mergeLog = log
+      })
+      this.notice = log.length ? `合并完成：${log.join('；')}。` : '修订内容与当前稿一致，无需改动。'
     }
   }
 })

@@ -106,6 +106,10 @@ function formatTime(value: string) {
   return new Date(value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
 }
 function segmentLabel(segment: Segment) { return segment.label || '未命名段落' }
+function syncDotClass(exhibitId: string) {
+  const state = store.exhibitSyncState(exhibitId)
+  return state === 'none' ? '' : `sync-${state}`
+}
 </script>
 
 <template>
@@ -153,7 +157,10 @@ function segmentLabel(segment: Segment) { return segment.label || '未命名段�
           >
             <template #prepend><v-chip size="small" variant="outlined">{{ item.code }}</v-chip></template>
             <v-list-item-title class="font-weight-medium">{{ item.title }}</v-list-item-title>
-            <v-list-item-subtitle>{{ item.drafts.length }} 种语言</v-list-item-subtitle>
+            <v-list-item-subtitle class="d-flex align-center">
+              <span v-if="syncDotClass(item.id)" class="sync-dot" :class="syncDotClass(item.id)" aria-hidden="true" />
+              {{ item.drafts.length }} 种语言
+            </v-list-item-subtitle>
           </v-list-item>
         </v-list>
       </div>
@@ -198,8 +205,14 @@ function segmentLabel(segment: Segment) { return segment.label || '未命名段�
           <v-tab value="versions">版本比较</v-tab>
           <v-tab value="preview">设备预览</v-tab>
           <v-tab value="sources">资料核对</v-tab>
+          <v-tab value="publish">
+            发布下发
+            <v-chip v-if="store.mismatchCount" size="x-small" color="error" class="ms-2">{{ store.mismatchCount }}</v-chip>
+          </v-tab>
         </v-tabs>
 
+        <PublishPanel v-if="activeTab === 'publish'" />
+        <template v-else>
         <div v-if="draft">
           <v-window v-model="activeTab" :touch="false">
             <v-window-item value="editor">
@@ -380,6 +393,7 @@ function segmentLabel(segment: Segment) { return segment.label || '未命名段�
           </v-window>
         </div>
         <v-empty-state v-else icon="mdi-script-text-outline" title="尚未选择展项" text="请从左侧选择一个展厅和展项。" />
+        </template>
       </div>
     </v-main>
 
